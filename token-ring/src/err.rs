@@ -1,6 +1,9 @@
 use core::fmt;
 use std::error::Error;
+use crossbeam_channel::{SendError, RecvError};
 use ed25519_dalek::SignatureError;
+
+use crate::comm::QueuedPacket;
 
 pub type TResult<T = ()> = Result<T, GlobalError>;
 
@@ -8,6 +11,8 @@ pub enum GlobalError {
     Internal(TokenRingError),
     Io(std::io::Error),
     Signature(SignatureError),
+    CrossbeamSend(SendError<QueuedPacket>),
+    CrossbeamRecv(RecvError),
     Unknown
 }
 
@@ -17,6 +22,8 @@ impl fmt::Debug for GlobalError {
             GlobalError::Internal(err) => write!(f, "{err}"),
             GlobalError::Io(err) => write!(f, "{err}"),
             GlobalError::Signature(err) => write!(f, "{err}"),
+            GlobalError::CrossbeamSend(err) => write!(f, "{err}"),
+            GlobalError::CrossbeamRecv(err) => write!(f, "{err}"),
             GlobalError::Unknown => write!(f, "Unknown error occured!"),
         }
     }
@@ -46,11 +53,24 @@ impl From<SignatureError> for GlobalError {
     }
 }
 
+impl From<SendError<QueuedPacket>> for GlobalError {
+    fn from(value: SendError<QueuedPacket>) -> Self {
+        GlobalError::CrossbeamSend(value)
+    }
+}
+
+impl From<RecvError> for GlobalError {
+    fn from(value: RecvError) -> Self {
+        GlobalError::CrossbeamRecv(value)
+    }
+}
+
 // ---
 
 #[derive(Debug, Clone, Copy)]
 pub enum TokenRingError {
     InvalidPacketHeader,
+    NotConnected,
     Unknown
 }
 

@@ -6,6 +6,7 @@ pub mod serialize;
 pub mod signature;
 pub mod workstation;
 pub mod comm;
+pub mod event;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

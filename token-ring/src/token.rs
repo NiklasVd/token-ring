@@ -3,6 +3,7 @@ use byteorder::{WriteBytesExt, ReadBytesExt, BigEndian};
 
 use crate::{id::WorkStationId, serialize::{Serializable, write_instant, read_instant, write_vec, read_vec, write_byte_vec, read_byte_vec}, signature::Signed, err::TResult};
 
+#[derive(Debug, Clone)]
 pub struct TokenHeader {
     origin: WorkStationId,
     timestamp: Instant
@@ -35,6 +36,7 @@ impl Serializable for TokenHeader {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum TokenSendMode {
     Unicast(WorkStationId),
     Broadcast
@@ -71,6 +73,7 @@ impl Serializable for TokenSendMode {
     }
 }
 
+#[derive(Debug)]
 pub struct TokenFrameId {
     source: WorkStationId,
     timestamp: Instant,
@@ -105,9 +108,18 @@ impl Serializable for TokenFrameId {
     }
 }
 
+#[derive(Debug)]
 pub struct Token {
     header: Signed<TokenHeader>,
     frames: Vec<Signed<TokenFrame>>
+}
+
+impl Token {
+    pub fn new(header: Signed<TokenHeader>) -> Token {
+        Token {
+            header, frames: vec![]
+        }
+    }
 }
 
 impl Serializable for Token {
@@ -132,6 +144,7 @@ impl Serializable for Token {
     }
 }
 
+#[derive(Debug)]
 pub struct TokenFrame {
     id: TokenFrameId,
     content: TokenFrameType
@@ -230,5 +243,26 @@ impl Serializable for TokenFrameType {
             TokenFrameType::DataReceived { source, .. } => 
                 source.size() + 2,
         }
+    }
+}
+
+impl std::fmt::Debug for TokenFrameType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenFrameType::Empty => write!(f, "Token frame empty"),
+            TokenFrameType::Data { destination,
+                send_mode, seq, payload } => 
+                write!(f, "Token frame data (to: {destination}, delivery: {:?}, seq: {seq}, payload size: {:?}", send_mode, payload.len()),
+            TokenFrameType::DataReceived { source, seq } => 
+                write!(f, "Token frame data ack (from: {source}, seq: {seq})"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn serialize() {
+        
     }
 }

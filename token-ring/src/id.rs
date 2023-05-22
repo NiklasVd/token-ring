@@ -1,16 +1,24 @@
 use core::fmt;
-use std::io::Cursor;
+use std::{io::Cursor, time::SystemTime};
 use crate::{serialize::{Serializable, write_byte_vec, read_byte_vec}, err::TResult};
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WorkStationId {
-    name: String
+    // Max size 8 chars
+    name: String,
+    num: u16
 }
 
 impl WorkStationId {
-    pub fn new(name: String) -> WorkStationId {
+    pub fn new(mut name: String) -> WorkStationId {
+        if name.len() > 8 {
+            name.truncate(8);
+        }
+        let num = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as u16;
+
         WorkStationId {
-            name: name.to_ascii_lowercase()
+            name, num
         }
     }
 }
@@ -23,8 +31,8 @@ impl Serializable for WorkStationId {
     }
 
     fn read(buf: &mut Cursor<&[u8]>) -> TResult<Self::Output> {
-        Ok(WorkStationId::new(
-            String::from_utf8(read_byte_vec(buf)?).unwrap() /* Check err... */))
+        let name = String::from_utf8(read_byte_vec(buf)?).unwrap(); // TODO: Check err...
+        Ok(WorkStationId::new(name))
     }
 
     fn size(&self) -> usize {
@@ -34,12 +42,12 @@ impl Serializable for WorkStationId {
 
 impl fmt::Debug for WorkStationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "/{}/", self.name)
+        write!(f, "/{}{}/", self.name, self.num)
     }
 }
 
 impl fmt::Display for WorkStationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "/{}/", self.name)
+        write!(f, "{}{}", self.name, self.num)
     }
 }
