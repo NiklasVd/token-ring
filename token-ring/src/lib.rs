@@ -7,6 +7,7 @@ pub mod signature;
 pub mod comm;
 pub mod event;
 pub mod station;
+pub mod pass;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

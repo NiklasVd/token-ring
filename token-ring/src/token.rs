@@ -109,11 +109,11 @@ impl Serializable for TokenFrameId {
 
 #[derive(Debug, Clone)]
 pub struct Token {
-    header: Signed<TokenHeader>,
+    pub header: Signed<TokenHeader>,
     // Signed container not necessary anymore
     // Using star topology now, so active monitor (de facto server) will 
     // be able to check validity of token changes by each client after they pass it on.
-    frames: Vec<TokenFrame>
+    pub frames: Vec<TokenFrame>
 }
 
 impl Token {

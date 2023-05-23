@@ -3,7 +3,7 @@ use std::{error::Error, net::SocketAddr};
 use crossbeam_channel::{SendError, RecvError};
 use ed25519_dalek::SignatureError;
 
-use crate::{comm::QueuedPacket, id::WorkStationId};
+use crate::{comm::QueuedPacket, id::WorkStationId, token::Token};
 
 pub type TResult<T = ()> = Result<T, GlobalError>;
 
@@ -71,10 +71,13 @@ impl From<RecvError> for GlobalError {
 pub enum TokenRingError {
     InvalidPacketHeader,
     NotConnected,
+    StationNotRegistered(WorkStationId, SocketAddr),
     InvalidSignature,
-    InvalidToken(WorkStationId, SocketAddr),
+    InvalidToken(WorkStationId, Token),
     RejectedJoinAttempt(WorkStationId, String),
     InvalidWorkStationId(WorkStationId, WorkStationId),
+    EmptyRing,
+    TokenPending,
     Unknown
 }
 

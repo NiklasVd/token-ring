@@ -3,7 +3,7 @@ use crossbeam_channel::{Sender, Receiver, unbounded};
 use ed25519_dalek::Keypair;
 use log::{warn, info};
 use tokio::net::UdpSocket;
-use crate::{id::WorkStationId, comm::{QueuedPacket, WorkStationSender, WorkStationReceiver, send_loop, recv_loop}, signature::{generate_keypair, Signed}, err::{TResult, GlobalError, TokenRingError}, packet::{Packet, PacketType, PacketHeader, JoinAnswerResult}, token::Token};
+use crate::{id::WorkStationId, comm::{QueuedPacket, WorkStationSender, WorkStationReceiver, send_loop, recv_loop}, signature::{generate_keypair, Signed}, err::{TResult, GlobalError, TokenRingError}, packet::{Packet, PacketType, PacketHeader, JoinAnswerResult}, token::{Token, TokenHeader}, pass::{TokenPasser, StationStatus}};
 
 pub type AMx<T> = Arc<Mutex<T>>;
 
@@ -20,13 +20,15 @@ pub struct Config {
 pub struct GlobalConfig {
     password: String,
     accept_connections: bool,
-    max_connections: u16
+    max_connections: u16,
+    max_passover_time: f32
 }
 
 impl GlobalConfig {
-    pub fn new(password: String, accept_connections: bool, max_connections: u16) -> GlobalConfig {
+    pub fn new(password: String, accept_connections: bool, max_connections: u16,
+        max_passover_time: f32) -> GlobalConfig {
         GlobalConfig {
-            password, accept_connections, max_connections
+            password, accept_connections, max_connections, max_passover_time
         }
     }
 }
@@ -45,21 +47,13 @@ pub trait WorkStation {
     fn running(&self) -> bool;
 }
 
-struct StationStatus(bool /* Received token this round? */, /* u32 (Checksum?) */);
-// Current token and station that holds it
-struct TokenStatus(Token, WorkStationId);
-
 pub struct ActiveStation {
     config: Config,
     global_config: GlobalConfig,
     sock: Arc<UdpSocket>,
     running: Arc<AtomicBool>,
     connected_stations: HashMap<WorkStationId, SocketAddr>,
-
-    // List with all connected stations, sets the order in which passive stations
-    // receive token and stores if they were owned one in current rotation.
-    station_status: HashMap<WorkStationId, StationStatus>,
-    token_status: Option<TokenStatus>,
+    token_passer: TokenPasser,
 
     send_queue: Sender<QueuedPacket>,
     recv_queue: Receiver<QueuedPacket>
@@ -73,20 +67,28 @@ impl ActiveStation {
         let sock_arced = Arc::new(sock);
         let running = Arc::new(AtomicBool::new(true));
 
+        // Sender handles all outgoing packets (serializing, transport) in a
+        // background thread
         let send_queue = unbounded();
         let sender = WorkStationSender::new(running.clone(),
             sock_arced.clone(), send_queue.1);
         send_loop(sender)?;
         
+        // Recv handles all incoming packets, deserializing, buffering
+        // and event generation in a backtround thread
         let recv_queue = unbounded();
         let recv = WorkStationReceiver::new(
             running.clone(), sock_arced.clone(), recv_queue.0);
         recv_loop(recv)?;
+        
+        // The token passer stores current token rotating in the ring and
+        // stores which stations already owned the token and in which
+        // order and time it should be passed on.
+        let token_passer = TokenPasser::new(global_config.max_passover_time);
         Ok(ActiveStation {
             config: Config::new(id), global_config: global_config,
             sock: sock_arced, running,
-            connected_stations: HashMap::new(), station_status: HashMap::new(),
-            token_status: None,
+            connected_stations: HashMap::new(), token_passer,
             send_queue: send_queue.0, recv_queue: recv_queue.1
         })
     }
@@ -187,13 +189,13 @@ impl ActiveStation {
             warn!("New station has same ID as {:?}{:?}. Replacing contact.", id, prev_station);
         } else {
             // If this ID didnt exist before, add to status list
-            self.station_status.insert(id, StationStatus(false));
+            self.token_passer.station_status.insert(id, StationStatus(false));
         }
     }
 
     fn remove_station(&mut self, id: &WorkStationId) {
         if let Some(_) = self.connected_stations.remove(id) {
-            self.station_status.remove(id);
+            self.token_passer.station_status.remove(id);
         } else {
             warn!("Did not find connected station with id {id}.")
         }
@@ -204,36 +206,65 @@ impl ActiveStation {
     }
 
     async fn recv_token_pass(&mut self, addr: SocketAddr, id: &WorkStationId, token: Token) -> TResult {
+        // Check if socket addr of token sender equals addr stored in id hashmap
         if let Some(station_addr) = self.get_station_addr(id) {
             if station_addr != addr {
                 warn!("{:?}{:?} passed token but is registered under socket addr {:?}. Discarding token.", id, addr, station_addr);
-                return Err(GlobalError::Internal(TokenRingError::InvalidToken(id.clone(), addr)));
+                return Err(GlobalError::Internal(TokenRingError::InvalidToken(id.clone(), token)));
             }
         }
-        if let Some(status) = self.station_status.get_mut(id) {
-            // This station has held the token and is ticked off.
-            status.0 = true;
-        } else {
-            warn!("Received token from missing station {:?}{:?}. Ignoring.", id, addr);
-            return Err(GlobalError::Internal(TokenRingError::InvalidToken(id.clone(), addr)));
-        }
-        for (station, status) in self.station_status.iter() {
-            // If station hasnt yet held the token this rotation, send it now
-            if !status.0 {
-                
-            }
-        }
-        Ok(())
+        self.token_passer.recv_token(token, id)
     }
 
-    async fn pass_on_token(&mut self, id: &WorkStationId, token: Token) {
-        
-        self.token_status = Some(TokenStatus(token, id.clone()));
+    pub async fn poll_token_pass(&mut self) -> TResult {
+        if self.token_passer.pass_ready() {
+            self.pass_on_token().await
+        } else {
+            Err(GlobalError::Internal(TokenRingError::TokenPending))
+        }
+    }
+
+    async fn pass_on_token(&mut self) -> TResult {
+        if let Some(next_station) = self.token_passer.select_next_station() {
+            let addr = self.get_station_addr(&next_station).unwrap();
+            let curr_token = match self.token_passer.curr_token.as_ref() {
+                Some(t) => {
+                    info!("Passing token on to {:?}{:?}.", next_station, addr);
+                    t.clone()
+                },
+                None => {
+                    info!("Token passed over all stations. Generating new and passing to {:?}{:?}.", next_station, addr);
+                    self.generate_token()?
+                }
+            };
+
+            self.send_packet(addr, next_station.clone(), 
+                PacketType::TokenPass(curr_token)).await
+        } else {
+            warn!("Cannot pass on token because ring is empty.");
+            Err(GlobalError::Internal(TokenRingError::EmptyRing))
+        }
     }
 
     async fn recv_leave(&mut self, addr: SocketAddr, id: &WorkStationId) -> TResult {
-        self.remove_station(id);
-        Ok(())
+        if let Some(registered_addr) = self.get_station_addr(id) {
+            if registered_addr == addr {
+                info!("{:?}{:?} left the ring.", id, addr);
+                self.remove_station(id);
+                return Ok(())
+            } else {
+                warn!("{:?}{:?} intended to leave ring but registered socket addr differs: {:?}. Ignoring.", id, addr, registered_addr);
+            }
+        } else {
+            warn!("{:?}{:?} intended to leave but is not a registered station in this ring.", id, addr)
+        }
+        Err(GlobalError::Internal(TokenRingError::StationNotRegistered(id.clone(), addr)))
+    }
+
+    fn generate_token(&self) -> TResult<Token> {
+        Ok(Token::new(Signed::new(
+                    &self.config.keypair, TokenHeader::new(
+                        self.config.id.clone()))?))
     }
 
     fn verify_recv_packet(&self, packet: &Packet) -> TResult {
