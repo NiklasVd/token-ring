@@ -43,7 +43,7 @@ pub fn send_loop(sender: WorkStationSender) -> TResult {
                 // Send packet
                 match sender.sock.send_to(
                     payload.as_slice(), next_packet.1).await {
-                    Ok(size) => info!("[Send /{}/{:?}] {:?} packet ({size}b).",
+                    Ok(size) => info!("[Send {:?}{:?}] {:?} packet ({size}b).",
                         next_packet.0.header.val.destination, next_packet.1,
                         next_packet.0.content),
                     Err(e) => {
@@ -101,7 +101,7 @@ pub fn recv_loop(recv: WorkStationReceiver) -> TResult {
             };
 
             // Pass to main thread
-            info!("[Recv /{}/{:?}] {:?} packet ({size}b).",
+            info!("[Recv {:?}{:?}] {:?} packet ({size}b).",
                 packet.header.val.source, addr, packet.content);
             if let Err(e) = recv.recv_queue.send(QueuedPacket(packet, addr)) {
                 error!("Failed to queue received packet: {e}.")

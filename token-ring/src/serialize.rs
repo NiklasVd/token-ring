@@ -1,6 +1,5 @@
 use std::{io::{Cursor, Write, Read}, net::{SocketAddr, IpAddr}, time::{Instant, Duration}};
 use byteorder::{WriteBytesExt, BigEndian, ReadBytesExt};
-
 use crate::err::TResult;
 
 pub trait Serializable {
@@ -66,6 +65,14 @@ pub fn read_vec<T: Serializable<Output = T>>(buf: &mut Cursor<&[u8]>) -> TResult
     Ok(vec)
 }
 
+pub fn write_string(buf: &mut Vec<u8>, str: &String) -> TResult {
+    write_byte_vec(buf, &str.as_bytes().to_vec())
+}
+
+pub fn read_string(buf: &mut Cursor<&[u8]>) -> TResult<String> {
+    Ok(String::from_utf8(read_byte_vec(buf)?).unwrap()) // TODO: Check err...
+}
+
 pub fn write_sock_addr(buf: &mut Vec<u8>, addr: &SocketAddr) -> TResult {
     match addr.ip() {
         std::net::IpAddr::V4(ip) => {
@@ -100,6 +107,16 @@ pub fn get_sock_addr_size(addr: &SocketAddr) -> usize {
     }) + 2
 }
 
+pub fn write_instant(buf: &mut Vec<u8>, time: Instant) -> TResult {
+    Ok(buf.write_f32::<BigEndian>(time.elapsed().as_secs_f32())?)
+}
+
+pub fn read_instant(buf: &mut Cursor<&[u8]>) -> TResult<Instant> {
+    // TODO: Improve serialization
+    let elapsed = Duration::from_secs_f32(buf.read_f32::<BigEndian>()?);
+    Ok(Instant::now().checked_sub(elapsed).unwrap())
+}
+
 pub trait Serializer : Serializable {
     fn serialize(&self) -> TResult<Vec<u8>> {
         let mut buf = vec![];
@@ -109,14 +126,4 @@ pub trait Serializer : Serializable {
     fn deserialize(buf: &[u8]) -> TResult<Self::Output> {
         Ok(Self::read(&mut Cursor::new(&buf))?)
     }
-}
-
-pub fn write_instant(buf: &mut Vec<u8>, time: Instant) -> TResult {
-    Ok(buf.write_f32::<BigEndian>(time.elapsed().as_secs_f32())?)
-}
-
-pub fn read_instant(buf: &mut Cursor<&[u8]>) -> TResult<Instant> {
-    // TODO: Improve serialization
-    let elapsed = Duration::from_secs_f32(buf.read_f32::<BigEndian>()?);
-    Ok(Instant::now().checked_sub(elapsed).unwrap())
 }

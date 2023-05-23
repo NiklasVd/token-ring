@@ -1,6 +1,6 @@
-use std::{io::Cursor, net::SocketAddr};
+use std::{io::Cursor};
 use byteorder::{WriteBytesExt, ReadBytesExt};
-use crate::{token::Token, id::WorkStationId, serialize::{Serializable, write_sock_addr, write_byte_vec, read_sock_addr, read_byte_vec, get_sock_addr_size, Serializer}, err::TResult, signature::Signed};
+use crate::{token::Token, id::WorkStationId, serialize::{Serializable, write_byte_vec, read_byte_vec, Serializer, write_string, read_string}, err::TResult, signature::Signed};
 
 /* Packet Layout (in bytes)
     ---------------------------------------------  
@@ -100,7 +100,7 @@ impl Serializer for Packet {
 
 #[derive(Debug)]
 pub enum JoinAnswerResult {
-    Confirm(SocketAddr),
+    Confirm(),
     Deny(String)
 }
 
@@ -109,9 +109,9 @@ impl Serializable for JoinAnswerResult {
 
     fn write(&self, buf: &mut Vec<u8>) -> TResult {
         Ok(match self {
-            JoinAnswerResult::Confirm(target_addr) => {
+            JoinAnswerResult::Confirm() => {
                 buf.write_u8(0)?;
-                write_sock_addr(buf, target_addr)
+                Ok(())
             },
             JoinAnswerResult::Deny(reason) => {
                 buf.write_u8(1)?;
@@ -122,7 +122,7 @@ impl Serializable for JoinAnswerResult {
 
     fn read(buf: &mut Cursor<&[u8]>) -> TResult<Self::Output> {
         Ok(match buf.read_u8()? {
-            0 => JoinAnswerResult::Confirm(read_sock_addr(buf)?),
+            0 => JoinAnswerResult::Confirm(),
             1 => JoinAnswerResult::Deny(String::from_utf8(read_byte_vec(buf)?).unwrap()),
             n @ _ => panic!("Index out of bounds: {n}.")
         })
@@ -130,17 +130,17 @@ impl Serializable for JoinAnswerResult {
 
     fn size(&self) -> usize {
         1 + match self {
-            JoinAnswerResult::Confirm(addr) => get_sock_addr_size(addr),
+            JoinAnswerResult::Confirm() => 0,
             JoinAnswerResult::Deny(reason) => reason.len(),
         }
     }
 }
 
 pub enum PacketType {
-    JoinRequest(WorkStationId),
+    JoinRequest(String),
     JoinReply(JoinAnswerResult),
     TokenPass(Token),
-    Leave(WorkStationId /* Connect back station to current front station */)
+    Leave()
 }
 
 impl Serializable for PacketType {
@@ -148,9 +148,9 @@ impl Serializable for PacketType {
 
     fn write(&self, buf: &mut Vec<u8>) -> TResult {
         Ok(match self {
-            PacketType::JoinRequest(id) => {
+            PacketType::JoinRequest(pw) => {
                 buf.write_u8(0)?;
-                id.write(buf)
+                write_string(buf, pw)
             },
             PacketType::JoinReply(result) => {
                 buf.write_u8(1)?;
@@ -160,28 +160,31 @@ impl Serializable for PacketType {
                 buf.write_u8(2)?;
                 token.write(buf)
             },
-            PacketType::Leave(id) => {
+            PacketType::Leave() => {
                 buf.write_u8(3)?;
-                id.write(buf)
+                Ok(())
             }
         }?)
     }
 
     fn read(buf: &mut Cursor<&[u8]>) -> TResult<Self::Output> {
         Ok(match buf.read_u8()? {
-            0 => PacketType::JoinRequest(WorkStationId::read(buf)?),
+            0 => {
+                PacketType::JoinRequest(read_string(buf)?)
+            },
             1 => PacketType::JoinReply(JoinAnswerResult::read(buf)?),
             2 => PacketType::TokenPass(Token::read(buf)?),
+            3 => PacketType::Leave(),
             n @ _ => panic!("Index out of bounds: {n}.")
         })
     }
 
     fn size(&self) -> usize {
         1 + match self {
-            PacketType::JoinRequest(id) => id.size(),
+            PacketType::JoinRequest(pw) => pw.len(),
             PacketType::JoinReply(result) => result.size(),
             PacketType::TokenPass(token) => token.size(),
-            PacketType::Leave(id) => id.size()
+            PacketType::Leave() => 0
         }
     }
 }
@@ -189,10 +192,10 @@ impl Serializable for PacketType {
 impl std::fmt::Debug for PacketType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PacketType::JoinRequest(id) => write!(f, "Join request (id: {id})"),
-            PacketType::JoinReply(result) => write!(f, "Join answer (result: {:?})", result),
+            PacketType::JoinRequest(pw) => write!(f, "Join request (pw: {pw})"),
+            PacketType::JoinReply(result) => write!(f, "Join reply (result: {:?})", result),
             PacketType::TokenPass(token) => write!(f, "Token pass (token: {:#?})", token),
-            PacketType::Leave(id) => write!(f, "Leave (New Front: {id}")
+            PacketType::Leave() => write!(f, "Leave")
         }
     }
 }

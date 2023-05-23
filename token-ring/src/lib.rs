@@ -4,9 +4,9 @@ pub mod token;
 pub mod id;
 pub mod serialize;
 pub mod signature;
-pub mod workstation;
 pub mod comm;
 pub mod event;
+pub mod station;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

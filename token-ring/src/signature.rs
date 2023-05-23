@@ -1,9 +1,8 @@
 use std::io::Cursor;
 use ed25519_dalek::{PublicKey, Signature as S, Keypair, Signer, Verifier, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH, ed25519::signature::Signature};
-use rand::rngs::OsRng;
 use crate::{serialize::{Serializable, read_byte_arr, write_byte_arr, write_byte_vec, read_byte_vec}, err::TResult};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Signed<T: Serializable> {
     /* Alternative layout: keypair, val stored on initialization,
     while val_bytes and signature are kept in Option types. Then,
@@ -64,7 +63,7 @@ impl<T: Serializable<Output = T>> Serializable for Signed<T> {
 }
 
 pub fn generate_keypair() -> Keypair {
-    let mut rng = OsRng;
+    let mut rng = rand::rngs::OsRng;
     Keypair::generate(&mut rng)
 }
 

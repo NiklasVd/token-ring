@@ -1,6 +1,6 @@
 use core::fmt;
 use std::{io::Cursor, time::SystemTime};
-use crate::{serialize::{Serializable, write_byte_vec, read_byte_vec}, err::TResult};
+use crate::{serialize::{Serializable, write_string, read_string}, err::TResult};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WorkStationId {
@@ -27,12 +27,11 @@ impl Serializable for WorkStationId {
     type Output = WorkStationId;
 
     fn write(&self, buf: &mut Vec<u8>) -> TResult {
-        write_byte_vec(buf, &self.name.as_bytes().to_vec())
+        write_string(buf, &self.name)
     }
 
     fn read(buf: &mut Cursor<&[u8]>) -> TResult<Self::Output> {
-        let name = String::from_utf8(read_byte_vec(buf)?).unwrap(); // TODO: Check err...
-        Ok(WorkStationId::new(name))
+        Ok(WorkStationId::new(read_string(buf)?))
     }
 
     fn size(&self) -> usize {

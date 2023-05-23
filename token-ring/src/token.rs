@@ -1,6 +1,5 @@
 use std::{time::Instant, io::Cursor};
 use byteorder::{WriteBytesExt, ReadBytesExt, BigEndian};
-
 use crate::{id::WorkStationId, serialize::{Serializable, write_instant, read_instant, write_vec, read_vec, write_byte_vec, read_byte_vec}, signature::Signed, err::TResult};
 
 #[derive(Debug, Clone)]
@@ -36,7 +35,7 @@ impl Serializable for TokenHeader {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenSendMode {
     Unicast(WorkStationId),
     Broadcast
@@ -73,7 +72,7 @@ impl Serializable for TokenSendMode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenFrameId {
     source: WorkStationId,
     timestamp: Instant,
@@ -108,10 +107,13 @@ impl Serializable for TokenFrameId {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Token {
     header: Signed<TokenHeader>,
-    frames: Vec<Signed<TokenFrame>>
+    // Signed container not necessary anymore
+    // Using star topology now, so active monitor (de facto server) will 
+    // be able to check validity of token changes by each client after they pass it on.
+    frames: Vec<TokenFrame>
 }
 
 impl Token {
@@ -144,7 +146,7 @@ impl Serializable for Token {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenFrame {
     id: TokenFrameId,
     content: TokenFrameType
@@ -177,6 +179,7 @@ impl Serializable for TokenFrame {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub enum TokenFrameType {
     Empty,
     Data {
