@@ -21,13 +21,13 @@ use crate::{token::Token, id::WorkStationId, serialize::{Serializable, write_byt
 #[derive(Debug, Clone, PartialEq)]
 pub struct PacketHeader {
     pub source: WorkStationId,
-    pub destination: WorkStationId
+    //pub destination: WorkStationId
 }
 
 impl PacketHeader {
-    pub fn new(source: WorkStationId, destination: WorkStationId) -> PacketHeader {
+    pub fn new(source: WorkStationId) -> PacketHeader {
         PacketHeader {
-            source, destination
+            source
         }
     }
 }
@@ -36,15 +36,13 @@ impl Serializable for PacketHeader {
     type Output = PacketHeader;
 
     fn write(&self, buf: &mut Vec<u8>) -> TResult {
-        self.source.write(buf)?;
-        self.destination.write(buf)
+        self.source.write(buf)
     }
 
     fn read(buf: &mut Cursor<&[u8]>) -> TResult<Self::Output> {
         let source = WorkStationId::read(buf)?;
-        let destination = WorkStationId::read(buf)?;
         Ok(PacketHeader {
-            source, destination
+            source
         })
     }
 
@@ -102,7 +100,7 @@ impl Serializer for Packet {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JoinAnswerResult {
-    Confirm(),
+    Confirm(WorkStationId),
     Deny(String)
 }
 
@@ -111,9 +109,9 @@ impl Serializable for JoinAnswerResult {
 
     fn write(&self, buf: &mut Vec<u8>) -> TResult {
         Ok(match self {
-            JoinAnswerResult::Confirm() => {
+            JoinAnswerResult::Confirm(id) => {
                 buf.write_u8(0)?;
-                Ok(())
+                id.write(buf)
             },
             JoinAnswerResult::Deny(reason) => {
                 buf.write_u8(1)?;
@@ -124,7 +122,7 @@ impl Serializable for JoinAnswerResult {
 
     fn read(buf: &mut Cursor<&[u8]>) -> TResult<Self::Output> {
         Ok(match buf.read_u8()? {
-            0 => JoinAnswerResult::Confirm(),
+            0 => JoinAnswerResult::Confirm(WorkStationId::read(buf)?),
             1 => JoinAnswerResult::Deny(String::from_utf8(read_byte_vec(buf)?).unwrap()),
             n @ _ => panic!("Index out of bounds: {n}.")
         })
@@ -132,7 +130,7 @@ impl Serializable for JoinAnswerResult {
 
     fn size(&self) -> usize {
         1 + match self {
-            JoinAnswerResult::Confirm() => 0,
+            JoinAnswerResult::Confirm(id) => id.size(),
             JoinAnswerResult::Deny(reason) => reason.len(),
         }
     }
@@ -212,11 +210,11 @@ mod tests {
     fn create_packet() -> Packet {
         let keypair = generate_keypair();
         let header = PacketHeader::new(
-            WorkStationId::new("Bob".to_owned()), 
-            WorkStationId::new("Alice".to_owned()));
+            WorkStationId::new("Bob".to_owned()));
         let signed_header = Signed::new(&keypair, header).unwrap();
         Packet::new(signed_header, 
-            PacketType::JoinReply(JoinAnswerResult::Confirm()))
+            PacketType::JoinReply(JoinAnswerResult::Confirm(
+                WorkStationId::new("Alice".to_owned()))))
     }
 
     #[test]

@@ -1,9 +1,9 @@
-use std::{sync::{Arc, atomic::{AtomicBool, Ordering}, Mutex}, collections::HashMap, net::{SocketAddr, SocketAddrV4, Ipv4Addr}};
+use std::{sync::{Arc, atomic::{AtomicBool, Ordering}, Mutex}, collections::HashMap, net::{SocketAddr, SocketAddrV4, Ipv4Addr}, time::Duration};
 use crossbeam_channel::{Sender, Receiver, unbounded};
 use ed25519_dalek::Keypair;
 use log::{warn, info};
 use tokio::net::UdpSocket;
-use crate::{id::WorkStationId, comm::{QueuedPacket, WorkStationSender, WorkStationReceiver, send_loop, recv_loop}, signature::{generate_keypair, Signed}, err::{TResult, GlobalError, TokenRingError}, packet::{Packet, PacketType, PacketHeader, JoinAnswerResult}, token::{Token, TokenHeader}, pass::{TokenPasser, StationStatus}};
+use crate::{id::WorkStationId, comm::{QueuedPacket, WorkStationSender, WorkStationReceiver, send_loop, recv_loop}, signature::{generate_keypair, Signed}, err::{TResult, GlobalError, TokenRingError}, packet::{Packet, PacketType, PacketHeader, JoinAnswerResult}, token::{Token, TokenHeader, TokenFrame}, pass::{TokenPasser, StationStatus}};
 
 pub type AMx<T> = Arc<Mutex<T>>;
 
@@ -97,13 +97,13 @@ impl ActiveStation {
         self.running.store(false, Ordering::Relaxed);
     }
 
-    async fn send_packet(&mut self, dest_addr: SocketAddr, dest_id: WorkStationId,
+    async fn send_packet(&mut self, dest_addr: SocketAddr,
         packet: PacketType) -> TResult {
         let packet = Packet::new(
             // Move packet header signature into background send thread?
             // Hash generation is fast on eddsa algorithm but send loop exists for a reason 
             Signed::new(&self.config.keypair, 
-                PacketHeader::new(self.config.id.clone(), dest_id))?, 
+                PacketHeader::new(self.config.id.clone()))?, 
             packet);
         Ok(self.send_queue.send(QueuedPacket(packet, dest_addr))?)
     }
@@ -115,7 +115,7 @@ impl ActiveStation {
         while let Ok(packet) = self.recv_queue.try_recv() {
             let source_id = &packet.0.header.val.source;
             // Check signature and destination ID
-            if let Err(e) = self.verify_recv_packet(&packet.0) {
+            if let Err(e) = self.verify_recv_packet(&packet) {
                 warn!("{:?}{:?} sent invalid packet: {e}. Data will be discarded.",
                     source_id, packet.1);
                 return Err(e)
@@ -139,7 +139,7 @@ impl ActiveStation {
         if let Some(addr) = self.get_station_addr(&join_id) {
             if addr == join_addr {
                 warn!("{:?}{:?} attempted to join ring twice. Blocking attempt.", join_id, join_id);
-                self.send_packet(addr, join_id.clone(), 
+                self.send_packet(addr, 
                     PacketType::JoinReply(
                         JoinAnswerResult::Deny("Already joined".to_owned()))).await?;
                 return Err(GlobalError::Internal(
@@ -152,18 +152,19 @@ impl ActiveStation {
 
         if let Err(e) = self.check_join_request(&join_id, pw) {
             // TOOD: Improve deny reason
-            self.send_packet(join_addr, join_id, 
+            self.send_packet(join_addr, 
                 PacketType::JoinReply(
                     JoinAnswerResult::Deny("Invalid config".to_owned()))).await?;
             return Err(e)
+        } else {
+            let join_reply = PacketType::JoinReply(JoinAnswerResult::Confirm(self.config.id.clone()));
+            self.send_packet(join_addr, 
+                join_reply).await?;
+            self.add_station(join_id.clone(), join_addr);
+
+            info!("Added new station to ring: {:?}{:?}.", join_id, join_addr);
+            Ok(())
         }
-        
-        let join_reply = PacketType::JoinReply(JoinAnswerResult::Confirm());
-        self.send_packet(join_addr, join_id.clone(), 
-            join_reply).await?;
-        self.add_station(join_id.clone(), join_addr);
-        info!("Added new station to ring: {:?}{:?}.", join_id, join_addr);
-        Ok(())
     }
 
     fn check_join_request(&self, join_id: &WorkStationId, pw: String) -> TResult {
@@ -201,7 +202,7 @@ impl ActiveStation {
         }
     }
 
-    fn get_station_addr(&mut self, id: &WorkStationId) -> Option<SocketAddr> {
+    fn get_station_addr(&self, id: &WorkStationId) -> Option<SocketAddr> {
         self.connected_stations.get(id).copied()
     }
 
@@ -238,7 +239,7 @@ impl ActiveStation {
                 }
             };
 
-            self.send_packet(addr, next_station.clone(), 
+            self.send_packet(addr, 
                 PacketType::TokenPass(curr_token)).await
         } else {
             warn!("Cannot pass on token because ring is empty.");
@@ -267,17 +268,172 @@ impl ActiveStation {
                         self.config.id.clone()))?))
     }
 
-    fn verify_recv_packet(&self, packet: &Packet) -> TResult {
-        if packet.header.verify() {
-            if packet.header.val.destination != self.config.id {
-                Err(GlobalError::Internal(
-                    TokenRingError::InvalidWorkStationId(
-                        packet.header.val.destination.clone(), self.config.id.clone())))
-            } else {
-                Ok(())
+    fn verify_recv_packet(&self, packet: &QueuedPacket) -> TResult {
+        if packet.0.header.verify() {
+            match packet.0.content {
+                PacketType::JoinRequest(_) => Ok(()),
+                _ => {
+                    if let None = self.get_station_addr(
+                        &packet.0.header.val.source).as_ref() {
+                        Err(GlobalError::Internal(TokenRingError::StationNotRegistered(
+                            packet.0.header.val.source.clone(), packet.1)))
+                    } else {
+                        Ok(())
+                    }
+                }
             }
         } else {
             Err(GlobalError::Internal(TokenRingError::InvalidSignature))
+        }
+    }
+}
+
+pub enum ConnectionMode {
+    Offline,
+    Pending(SocketAddr),
+    Connected(WorkStationId, SocketAddr)
+}
+
+pub struct PassiveStation {
+    config: Config,
+    sock: Arc<UdpSocket>,
+    running: Arc<AtomicBool>,
+    conn_mode: ConnectionMode,
+    cached_frames: Vec<TokenFrame>,
+    curr_token: Option<Token>,
+
+    send_queue: Sender<QueuedPacket>,
+    recv_queue: Receiver<QueuedPacket>
+}
+
+impl PassiveStation {
+    pub async fn new(id: WorkStationId, port: u16) -> TResult<PassiveStation> {
+        let sock = UdpSocket::bind(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED, port)).await?;
+        let sock_arced = Arc::new(sock);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let send_queue = unbounded();
+        let sender = WorkStationSender::new(running.clone(),
+            sock_arced.clone(), send_queue.1);
+        send_loop(sender)?;
+
+        let recv_queue = unbounded();
+        let recv = WorkStationReceiver::new(running.clone(),
+            sock_arced.clone(), recv_queue.0);
+        recv_loop(recv)?;
+
+        Ok(PassiveStation {
+            config: Config::new(id), sock: sock_arced.clone(), running,
+            conn_mode: ConnectionMode::Offline, cached_frames: vec![],
+            curr_token: None,
+            send_queue: send_queue.0, recv_queue: recv_queue.1
+        })
+    }
+
+    pub async fn connect(&mut self, addr: SocketAddr, pw: String) -> TResult {
+        self.send_packet_to(addr, PacketType::JoinRequest(pw))
+    }
+
+    pub async fn shutdown(&mut self) -> TResult {
+        self.send_packet(PacketType::Leave())?;
+        // Sleep on main thread for 1 sec so that background thread can
+        // send goodbye in time.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        self.running.store(false, Ordering::Relaxed);
+        info!("Shudown passive station {}.", self.config.id);
+        Ok(())
+    }
+
+    pub fn append_frame(&mut self, frame: TokenFrame) {
+        info!("Appended token frame {:?} for next token.", frame);
+        self.cached_frames.push(frame);
+    }
+
+    pub fn pass_on_token(&mut self) -> TResult {
+        if let Some(curr_token) = self.curr_token.take() {
+            self.send_packet(PacketType::TokenPass(curr_token))
+        } else {
+            Err(GlobalError::Internal(TokenRingError::TokenPending))
+        }
+    }
+
+    pub async fn recv_next(&mut self) -> TResult {
+        if let Ok(packet) = self.recv_queue.try_recv() {
+            match &self.conn_mode {
+                ConnectionMode::Connected(
+                    target_id, target_addr) => {
+                        // Already connected. Is received packet from this connection (active station)?
+                        if &packet.1 == target_addr {
+                            if &packet.0.header.val.source == target_id {
+                                // Packet is legit; continue.
+                                match packet.0.content {
+                                    PacketType::TokenPass(token) => self.recv_token_pass(token),
+                                    n @ _ => warn!("Received invalid packet: {:?}.", n)
+                                }
+                                Ok(())
+                            } else {
+                                Err(GlobalError::Internal(
+                                    TokenRingError::InvalidWorkStationId(packet.0.header.val.source, target_id.clone())))
+                            }
+                        } else {
+                            Err(GlobalError::Internal(TokenRingError::InvalidSocketAddress(packet.1)))
+                        }
+                    },
+                    _ =>  {
+                        match packet.0.content {
+                            PacketType::JoinReply(result) => {
+                                self.recv_join_reply(result).await
+                            },
+                            n @ _ => {
+                                warn!("Received invalid packet: {:?}. Local station is not connected yet.", n);
+                                Err(GlobalError::Internal(TokenRingError::NotConnected))
+                        }
+                    }
+                }
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn recv_join_reply(&mut self, result: JoinAnswerResult) -> TResult {
+        match result {
+            JoinAnswerResult::Confirm(id) => {
+                info!("Active station {id} accepted connection. Joining ring.");
+                Ok(())
+            },
+            JoinAnswerResult::Deny(reason) => {
+                warn!("Active workstation denied access: {reason}.");
+                Err(GlobalError::Internal(TokenRingError::FailedJoinAttempt(reason)))
+            },
+        }
+    }
+
+    fn recv_token_pass(&mut self, mut token: Token) {
+        info!("Received token: {:?}.", token);
+        if let Some(prev_token) = self.curr_token.as_ref() {
+            warn!("Already holding token: {:?}. Discarding old and accepting new one.", prev_token)
+        }
+        // Move all cached frames into new token.
+        token.frames.append(&mut self.cached_frames.drain(..).collect::<Vec<_>>());
+        self.curr_token = Some(token);
+    }
+
+    fn send_packet_to(&mut self, addr: SocketAddr, packet: PacketType) -> TResult {
+        let packet = Packet::new(
+            // Move packet header signature into background send thread?
+            // Hash generation is fast on eddsa algorithm but send loop exists for a reason 
+            Signed::new(&self.config.keypair, 
+                PacketHeader::new(self.config.id.clone()))?, packet);
+        Ok(self.send_queue.send(QueuedPacket(packet, addr))?)
+    }
+
+    fn send_packet(&mut self, packet: PacketType) -> TResult {
+        match &self.conn_mode {
+            ConnectionMode::Connected(_, addr) =>
+                self.send_packet_to(*addr, packet),
+            _ => Err(GlobalError::Internal(TokenRingError::NotConnected))
         }
     }
 }

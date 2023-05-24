@@ -29,8 +29,8 @@ impl WorkStationSender {
 
 pub fn send_loop(sender: WorkStationSender) -> TResult {
     tokio::spawn(async move {
-        while sender.running.load(Ordering::Relaxed) {
-            if let Ok(next_packet) = sender.send_queue.try_recv() {
+        loop  {
+            while let Ok(next_packet) = sender.send_queue.try_recv() {
                 // Catch next packet to be sent from main thread and serialize
                 let payload = match next_packet.0.serialize() {
                     Ok(payload) => payload,
@@ -43,8 +43,8 @@ pub fn send_loop(sender: WorkStationSender) -> TResult {
                 // Send packet
                 match sender.sock.send_to(
                     payload.as_slice(), next_packet.1).await {
-                    Ok(size) => info!("[Send {:?}{:?}] {:?} packet ({size}b).",
-                        next_packet.0.header.val.destination, next_packet.1,
+                    Ok(size) => info!("[Send to {:?}] {:?} packet ({size}b).",
+                        next_packet.1,
                         next_packet.0.content),
                     Err(e) => {
                         error!("Socket failed to send: {e}.");
@@ -52,7 +52,13 @@ pub fn send_loop(sender: WorkStationSender) -> TResult {
                     },
                 }
             }
+
+            if sender.running.load(Ordering::Relaxed) {
+                break
+            }
         }
+
+        info!("Send loop stopped.")
     });
     Ok(())
 }
@@ -74,7 +80,7 @@ impl WorkStationReceiver {
 pub fn recv_loop(recv: WorkStationReceiver) -> TResult {
     let handle = tokio::spawn(async move {
         let mut buf = [0u8; RECV_BUF_LENGTH];
-        while recv.running.load(Ordering::Relaxed) {
+        loop {
             // Readability condition required?
             if let Err(e) = recv.sock.readable().await {
                 error!("Pending read returned error: {e}.");
@@ -101,12 +107,17 @@ pub fn recv_loop(recv: WorkStationReceiver) -> TResult {
             };
 
             // Pass to main thread
-            info!("[Recv {:?}{:?}] {:?} packet ({size}b).",
+            info!("[Recv from {:?}{:?}] {:?} packet ({size}b).",
                 packet.header.val.source, addr, packet.content);
             if let Err(e) = recv.recv_queue.send(QueuedPacket(packet, addr)) {
                 error!("Failed to queue received packet: {e}.")
             }
+
+            if recv.running.load(Ordering::Relaxed) {
+                break
+            }
         }
+        info!("Recv loop stopped.")
     });
     Ok(())
 }

@@ -75,7 +75,9 @@ pub enum TokenRingError {
     InvalidSignature,
     InvalidToken(WorkStationId, Token),
     RejectedJoinAttempt(WorkStationId, String),
+    FailedJoinAttempt(String),
     InvalidWorkStationId(WorkStationId, WorkStationId),
+    InvalidSocketAddress(SocketAddr),
     EmptyRing,
     TokenPending,
     Unknown
