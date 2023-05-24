@@ -2,7 +2,7 @@ use std::io::Cursor;
 use ed25519_dalek::{PublicKey, Signature as S, Keypair, Signer, Verifier, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH, ed25519::signature::Signature};
 use crate::{serialize::{Serializable, read_byte_arr, write_byte_arr, write_byte_vec, read_byte_vec}, err::TResult};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Signed<T: Serializable> {
     /* Alternative layout: keypair, val stored on initialization,
     while val_bytes and signature are kept in Option types. Then,
@@ -69,10 +69,61 @@ pub fn generate_keypair() -> Keypair {
 
 #[cfg(test)]
 mod tests {
-    use super::generate_keypair;
+    use std::io::Cursor;
+    use crate::{serialize::{Serializable, write_string, read_string}, err::TResult};
+    use super::{generate_keypair, Signed};
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Stub(String);
+
+    impl Serializable for Stub {
+        type Output = Stub;
+
+        fn write(&self, buf: &mut Vec<u8>) -> TResult {
+            write_string(buf, &self.0)
+        }
+
+        fn read(buf: &mut Cursor<&[u8]>) -> TResult<Self::Output> {
+            let string = read_string(buf)?;
+            Ok(Stub(string))
+        }
+
+        fn size(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    fn create_stub() -> Signed<Stub> {
+        let keypair = generate_keypair();
+        let val = Stub("Test".to_owned());
+        Signed::new(&keypair, val).unwrap()
+    }
+
+    #[test]
+    fn serialize_stub() {
+        let stub = Stub("Test".to_owned());
+        let mut buf = vec![];
+        assert!(stub.write(&mut buf).is_ok());
+
+        let mut cursor = Cursor::new(buf.as_slice());
+        let new_stub = Stub::read(&mut cursor).unwrap();
+        assert_eq!(stub, new_stub)
+    }
 
     #[test]
     fn sign() {
-        let keypair = generate_keypair();
+        let signed_stub = create_stub();
+        assert!(signed_stub.verify());
+    }
+
+    #[test]
+    fn verify() {
+        let signed_stub = create_stub();
+        let mut buf = vec![];
+        signed_stub.write(&mut buf).unwrap();
+        
+        let mut cursor = Cursor::new(buf.as_slice());
+        let deserialized_stub = Signed::<Stub>::read(&mut cursor).unwrap();
+        assert!(deserialized_stub.verify());
     }
 }

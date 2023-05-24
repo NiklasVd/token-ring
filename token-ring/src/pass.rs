@@ -1,4 +1,4 @@
-use std::{time::Instant, collections::HashMap};
+use std::{collections::HashMap, time::Instant};
 use log::{warn, info};
 use crate::{id::WorkStationId, token::Token, err::{TResult, TokenRingError, GlobalError}};
 
@@ -34,7 +34,7 @@ impl TokenPasser {
 
     pub fn pass_ready(&mut self) -> bool {
         if let Some(TokenState(
-            id, send_time)) = self.state.as_mut() {
+            _, send_time)) = self.state.as_mut() {
             match self.pass_mode {
                 TokenPassMode::Received => {
                     true
@@ -106,7 +106,7 @@ impl TokenPasser {
         }
 
         if let Some((next_station_id, _)) = self.station_status.iter()
-            .find(|(id, status)| !status.0) {
+            .find(|(_, status)| !status.0) {
             Some(next_station_id.clone())
         } else {
             // This token rotation is over. Reset status of all stations and send

@@ -1,17 +1,17 @@
-use std::{time::Instant, io::Cursor};
+use std::{io::Cursor};
 use byteorder::{WriteBytesExt, ReadBytesExt, BigEndian};
-use crate::{id::WorkStationId, serialize::{Serializable, write_instant, read_instant, write_vec, read_vec, write_byte_vec, read_byte_vec}, signature::Signed, err::TResult};
+use crate::{id::WorkStationId, serialize::{Serializable, write_vec, read_vec, write_byte_vec, read_byte_vec}, signature::Signed, err::TResult, util::timestamp};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TokenHeader {
     origin: WorkStationId,
-    timestamp: Instant
+    timestamp: u64
 }
 
 impl TokenHeader {
     pub fn new(origin: WorkStationId) -> TokenHeader {
         TokenHeader {
-            origin, timestamp: Instant::now()
+            origin, timestamp: timestamp()
         }
     }
 }
@@ -21,12 +21,12 @@ impl Serializable for TokenHeader {
 
     fn write(&self, buf: &mut Vec<u8>) -> TResult {
         self.origin.write(buf)?;
-        write_instant(buf, self.timestamp)
+        Ok(buf.write_u64::<BigEndian>(self.timestamp)?)
     }
 
     fn read(buf: &mut Cursor<&[u8]>) -> TResult<Self::Output> {
         let origin = WorkStationId::read(buf)?;
-        let timestamp = read_instant(buf)?;
+        let timestamp = buf.read_u64::<BigEndian>()?;
         Ok(TokenHeader { origin, timestamp })
     }
 
@@ -75,13 +75,13 @@ impl Serializable for TokenSendMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenFrameId {
     source: WorkStationId,
-    timestamp: Instant,
+    timestamp: u64,
 }
 
 impl TokenFrameId {
     pub fn new(source: WorkStationId) -> TokenFrameId {
         TokenFrameId {
-            source, timestamp: Instant::now()
+            source, timestamp: timestamp()
         }
     }
 }
@@ -91,12 +91,12 @@ impl Serializable for TokenFrameId {
 
     fn write(&self, buf: &mut Vec<u8>) -> TResult {
         self.source.write(buf)?;
-        write_instant(buf, self.timestamp)
+        Ok(buf.write_u64::<BigEndian>(self.timestamp)?)
     }
 
     fn read(buf: &mut Cursor<&[u8]>) -> TResult<Self::Output> {
         let source = WorkStationId::read(buf)?;
-        let timestamp = read_instant(buf)?;
+        let timestamp = buf.read_u64::<BigEndian>()?;
         Ok(TokenFrameId {
             source, timestamp
         })
@@ -107,7 +107,7 @@ impl Serializable for TokenFrameId {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub header: Signed<TokenHeader>,
     // Signed container not necessary anymore
@@ -183,7 +183,6 @@ impl Serializable for TokenFrame {
 pub enum TokenFrameType {
     Empty,
     Data {
-        destination: WorkStationId,
         send_mode: TokenSendMode,
         seq: u16, // Sequence of frame (for identification purposes)
         payload: Vec<u8>
@@ -200,11 +199,10 @@ impl Serializable for TokenFrameType {
     fn write(&self, buf: &mut Vec<u8>) -> TResult {
         Ok(match self {
             TokenFrameType::Empty => buf.write_u8(0)?,
-            TokenFrameType::Data { destination,
-                send_mode, seq, payload } => {
+            TokenFrameType::Data { send_mode,
+                seq, payload } => {
                 buf.write_u8(1)?;
 
-                destination.write(buf)?;
                 send_mode.write(buf)?;
                 buf.write_u16::<BigEndian>(*seq)?;
                 write_byte_vec(buf, payload)?;
@@ -222,11 +220,10 @@ impl Serializable for TokenFrameType {
         Ok(match buf.read_u8()? {
             0 => TokenFrameType::Empty,
             1 => {
-                let destination = WorkStationId::read(buf)?;
                 let send_mode = TokenSendMode::read(buf)?;
                 let seq = buf.read_u16::<BigEndian>()?;
                 let payload = read_byte_vec(buf)?;
-                TokenFrameType::Data { destination, send_mode, seq, payload }
+                TokenFrameType::Data { send_mode, seq, payload }
             },
             2 => {
                 let source = WorkStationId::read(buf)?;
@@ -240,9 +237,9 @@ impl Serializable for TokenFrameType {
     fn size(&self) -> usize {
         1 + match self {
             TokenFrameType::Empty => 0,
-            TokenFrameType::Data { destination, send_mode,
+            TokenFrameType::Data { send_mode,
                 payload, .. } =>
-                destination.size() + send_mode.size() + 2 + payload.len(),
+                send_mode.size() + 2 + payload.len(),
             TokenFrameType::DataReceived { source, .. } => 
                 source.size() + 2,
         }
@@ -253,9 +250,9 @@ impl std::fmt::Debug for TokenFrameType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TokenFrameType::Empty => write!(f, "Token frame empty"),
-            TokenFrameType::Data { destination,
-                send_mode, seq, payload } => 
-                write!(f, "Token frame data (to: {destination}, delivery: {:?}, seq: {seq}, payload size: {:?}", send_mode, payload.len()),
+            TokenFrameType::Data { send_mode, seq,
+                payload } => 
+                write!(f, "Token frame data (delivery: {:?}, seq: {seq}, payload size: {:?}", send_mode, payload.len()),
             TokenFrameType::DataReceived { source, seq } => 
                 write!(f, "Token frame data ack (from: {source}, seq: {seq})"),
         }
@@ -264,8 +261,40 @@ impl std::fmt::Debug for TokenFrameType {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+    use crate::{signature::{generate_keypair, Signed}, id::WorkStationId, serialize::Serializable};
+    use super::{Token, TokenHeader, TokenFrame, TokenFrameId, TokenSendMode, TokenFrameType};
+
+    fn create_token_stub() -> Token {
+        let keypair = generate_keypair();
+        let header = TokenHeader::new(
+            WorkStationId::new("Test".to_owned()));
+        let signed_header = Signed::new(&keypair, header).unwrap();
+        let mut token = Token::new(signed_header);
+        let frame = TokenFrame::new(TokenFrameId::new(
+        WorkStationId::new("Some Station".to_owned())),
+        TokenFrameType::Data { send_mode: TokenSendMode::Broadcast,
+            seq: 0, payload: vec![0, 1, 2] });
+        token.frames.push(frame);
+        token
+    }
+
     #[test]
     fn serialize() {
+        let token = create_token_stub();       
+        let mut buf = vec![];
+        token.write(&mut buf).unwrap();
+    }
+
+    #[test]
+    fn deserialize() {
+        let token = create_token_stub();       
+        let mut buf = vec![];
+        assert!(token.write(&mut buf).is_ok());
+
+        let mut cursor = Cursor::new(buf.as_slice());
+        let new_token = Token::read(&mut cursor).unwrap();
         
+        assert_eq!(token, new_token)
     }
 }

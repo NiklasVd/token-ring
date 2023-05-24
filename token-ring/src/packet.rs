@@ -18,6 +18,7 @@ use crate::{token::Token, id::WorkStationId, serialize::{Serializable, write_byt
     ---------------------------------------------
  */
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct PacketHeader {
     pub source: WorkStationId,
     pub destination: WorkStationId
@@ -52,6 +53,7 @@ impl Serializable for PacketHeader {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Packet {
     pub header: Signed<PacketHeader>,
     pub content: PacketType
@@ -98,7 +100,7 @@ impl Serializer for Packet {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum JoinAnswerResult {
     Confirm(),
     Deny(String)
@@ -136,6 +138,7 @@ impl Serializable for JoinAnswerResult {
     }
 }
 
+#[derive(Clone, PartialEq)]
 pub enum PacketType {
     JoinRequest(String),
     JoinReply(JoinAnswerResult),
@@ -197,5 +200,33 @@ impl std::fmt::Debug for PacketType {
             PacketType::TokenPass(token) => write!(f, "Token pass (token: {:#?})", token),
             PacketType::Leave() => write!(f, "Leave")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use crate::{id::WorkStationId, signature::{generate_keypair, Signed}, serialize::Serializable};
+    use super::{Packet, PacketHeader, JoinAnswerResult, PacketType};
+
+    fn create_packet() -> Packet {
+        let keypair = generate_keypair();
+        let header = PacketHeader::new(
+            WorkStationId::new("Bob".to_owned()), 
+            WorkStationId::new("Alice".to_owned()));
+        let signed_header = Signed::new(&keypair, header).unwrap();
+        Packet::new(signed_header, 
+            PacketType::JoinReply(JoinAnswerResult::Confirm()))
+    }
+
+    #[test]
+    fn deserialize() {
+        let packet = create_packet();
+        let mut buf = vec![];
+        assert!(packet.write(&mut buf).is_ok());
+
+        let mut cursor = Cursor::new(buf.as_slice());
+        let new_packet = Packet::read(&mut cursor).unwrap();
+        assert_eq!(packet, new_packet)
     }
 }

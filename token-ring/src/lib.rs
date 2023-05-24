@@ -8,6 +8,7 @@ pub mod comm;
 pub mod event;
 pub mod station;
 pub mod pass;
+pub mod util;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

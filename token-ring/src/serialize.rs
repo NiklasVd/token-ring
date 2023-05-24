@@ -1,4 +1,4 @@
-use std::{io::{Cursor, Write, Read}, net::{SocketAddr, IpAddr}, time::{Instant, Duration}};
+use std::{io::{Cursor, Write, Read}, net::{SocketAddr, IpAddr}};
 use byteorder::{WriteBytesExt, BigEndian, ReadBytesExt};
 use crate::err::TResult;
 
@@ -43,7 +43,7 @@ pub fn write_byte_vec(buf: &mut Vec<u8>, vec: &Vec<u8>) -> TResult {
 
 pub fn read_byte_vec(buf: &mut Cursor<&[u8]>) -> TResult<Vec<u8>> {
     let len = buf.read_u16::<BigEndian>()?;
-    let mut vec = Vec::with_capacity(len as usize);
+    let mut vec = vec![0u8; len as usize];
     buf.read_exact(&mut vec)?;
     Ok(vec)
 }
@@ -58,7 +58,7 @@ pub fn write_vec<T: Serializable>(buf: &mut Vec<u8>, vec: &Vec<T>) -> TResult {
 
 pub fn read_vec<T: Serializable<Output = T>>(buf: &mut Cursor<&[u8]>) -> TResult<Vec<T>> {
     let len = buf.read_u32::<BigEndian>()? as usize;
-    let mut vec = vec![];
+    let mut vec = Vec::with_capacity(len);
     for _ in 0..len {
         vec.push(T::read(buf)?);
     }
@@ -66,11 +66,14 @@ pub fn read_vec<T: Serializable<Output = T>>(buf: &mut Cursor<&[u8]>) -> TResult
 }
 
 pub fn write_string(buf: &mut Vec<u8>, str: &String) -> TResult {
-    write_byte_vec(buf, &str.as_bytes().to_vec())
+    let bytes = &str.as_bytes().to_vec();
+    write_byte_vec(buf, bytes)
 }
 
 pub fn read_string(buf: &mut Cursor<&[u8]>) -> TResult<String> {
-    Ok(String::from_utf8(read_byte_vec(buf)?).unwrap()) // TODO: Check err...
+    let bytes = read_byte_vec(buf)?;
+    let string = String::from_utf8(bytes).unwrap();
+    Ok(string) // TODO: Check err...
 }
 
 pub fn write_sock_addr(buf: &mut Vec<u8>, addr: &SocketAddr) -> TResult {
@@ -107,15 +110,18 @@ pub fn get_sock_addr_size(addr: &SocketAddr) -> usize {
     }) + 2
 }
 
-pub fn write_instant(buf: &mut Vec<u8>, time: Instant) -> TResult {
-    Ok(buf.write_f32::<BigEndian>(time.elapsed().as_secs_f32())?)
-}
+// WARNING: write_instant()/read_instant() not usable, as Instant uses
+// floating types internally, which can not be routinely parsed without losing
+// data integrity.
 
-pub fn read_instant(buf: &mut Cursor<&[u8]>) -> TResult<Instant> {
-    // TODO: Improve serialization
-    let elapsed = Duration::from_secs_f32(buf.read_f32::<BigEndian>()?);
-    Ok(Instant::now().checked_sub(elapsed).unwrap())
-}
+// pub fn write_instant(buf: &mut Vec<u8>, time: Instant) -> TResult {
+//     Ok(buf.write_f32::<BigEndian>(time.elapsed().as_secs_f32())?)
+// }
+// pub fn read_instant(buf: &mut Cursor<&[u8]>) -> TResult<Instant> {
+//     // TODO: Improve serialization
+//     let elapsed = Duration::from_secs_f32(buf.read_f32::<BigEndian>()?);
+//     Ok(Instant::now().checked_sub(elapsed).unwrap())
+// }
 
 pub trait Serializer : Serializable {
     fn serialize(&self) -> TResult<Vec<u8>> {
