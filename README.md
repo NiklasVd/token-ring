@@ -1,4 +1,4 @@
-# nez
+# Token Ring
 ## Aufgaben zum Rechnernetze-Modul
 
 Der Ordner token-ring beinhaltet die Bibliothek für die Netzwerkkapabilität und die Pakete/Tokens.
