@@ -41,6 +41,7 @@ impl TokenPasser {
                 _ => {
                     if Instant::now().duration_since(*send_time)
                         .as_secs_f32() >= self.max_passover_time {
+                        println!("Current token holder took too long for token pass.");
                         true
                     } else {
                         false
@@ -48,37 +49,45 @@ impl TokenPasser {
                 }
             }
         } else {
+
             true
         }
     }
 
     pub fn recv_token(&mut self, new_token: Token, sender_id: &WorkStationId) -> TResult {
+        if let Some(status) = self.get_station(sender_id) {
+            // Whether or not token is valid, this station is ticked off the list.
+            status.0 = true;
+            self.pass_mode = TokenPassMode::Received;
+
+            match self.check_token_validity(&new_token, sender_id) {
+                Ok(()) => {
+                    // Update new token
+                    self.curr_token = Some(new_token);
+                    // Set pass mode so that new token may be sent
+                    
+                    println!("Received valid token from {sender_id}. Ready to pass on.");
+                    Ok(())
+                },
+                Err(e) => Err(e)
+            }
+        } else {
+            println!("Token sender is not part of registered station list. Ignoring.");
+            Err(GlobalError::Internal(TokenRingError::InvalidToken(sender_id.clone(), new_token)))
+        }
+    }
+
+    fn check_token_validity(&self, token: &Token, sender_id: &WorkStationId) -> TResult {
         if let Some(TokenState(
-            id, send_time)) = self.state.as_mut() {
+            id, send_time)) = self.state.as_ref() {
             let total_pass_time = Instant::now().duration_since(*send_time).as_secs_f32();
             // Has station overstepped the time limit?
             if total_pass_time <= self.max_passover_time {
                 // Is token header valid (i.e., is it actually from the active station)?
-                if new_token.header.verify() {
+                if token.header.verify() {
                     // Is the sender of the token actually the expected sender currently registered?
                     if sender_id == id {
-                        // Check validity of token frames
-                        // (Has the current token holder only modified accessible frames?)
-                        
-                        // If all is good, set pass mode to Received and get ready for next pass
-                        if let Some(status) = self.get_station(sender_id) {
-                            if status.0 {
-                                println!("Station {sender_id} that currently holds token already held it before this rotation.");
-                            }
-                            // Set station status to true now that token was passed to it.
-                            status.0 = true;
-                            // Update new token
-                            self.curr_token = Some(new_token);
-                            // Set pass mode so that new token may be sent
-                            self.pass_mode = TokenPassMode::Received;
-                            println!("Received valid token from {sender_id}. Ready to pass on.");
-                            return Ok(())
-                        }
+                        return Ok(())
                     } else {
                         println!("Received token from wrong station: {sender_id}. Expecting: {id}. Discarding.");
                     }
@@ -88,10 +97,8 @@ impl TokenPasser {
             } else {
                 println!("Received token too late ({total_pass_time}s) from {sender_id}. Discarding.");
             }
-        } else {
-            println!("Token sent by {sender_id}. Did not expect token.");
         }
-        Err(GlobalError::Internal(TokenRingError::InvalidToken(sender_id.clone(), new_token)))
+        Err(GlobalError::Internal(TokenRingError::InvalidToken(sender_id.clone(), token.clone())))
     }
 
     pub fn pass_token(&mut self, to_id: WorkStationId) {
@@ -104,15 +111,29 @@ impl TokenPasser {
             return None
         }
 
+        // If there are stations on the list that didn't yet hold the token, send there.
         let next_station = if let Some((next_station_id, _)) = self.station_status.iter()
             .find(|(_, status)| !status.0) {
             next_station_id.clone()
         } else {
             // This token rotation is over. Reset status of all stations and send
             // new token.
-            self.station_status.values_mut().for_each(|s| s.0 = false);
+            let mut station_order = vec![];
+            self.station_status.iter_mut().for_each(|(id, status)| {
+                status.0 = false;
+                station_order.push(id);
+            });
+
+            println!("Token passing order:");
+            for s_o in station_order.into_iter() {
+                print!("->{s_o}");
+            }
+            println!(".");
+            
+            // Select the next station to hold the new token (here: last station in hashmap)
             self.station_status.keys().last().unwrap().clone()
         };
+
         self.pass_token(next_station.clone());
         Some(next_station)
     }

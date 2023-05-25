@@ -193,9 +193,9 @@ impl Serializable for PacketType {
 impl std::fmt::Debug for PacketType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PacketType::JoinRequest(pw) => write!(f, "Join request (pw: {pw})"),
-            PacketType::JoinReply(result) => write!(f, "Join reply (result: {:?})", result),
-            PacketType::TokenPass(token) => write!(f, "Token pass (token: {:#?})", token),
+            PacketType::JoinRequest(_) => write!(f, "Join request"),
+            PacketType::JoinReply(result) => write!(f, "Join reply: {:?}.", result),
+            PacketType::TokenPass(token) => write!(f, "Token pass"),
             PacketType::Leave() => write!(f, "Leave")
         }
     }

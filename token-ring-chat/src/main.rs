@@ -3,7 +3,7 @@ use token_ring::{station::PassiveStation, err::TResult, id::WorkStationId, token
 
 #[tokio::main]
 async fn main() -> TResult {
-    println!("Token Ring Chat Client");
+    println!("Token Ring Chat Node");
 
     let name = read_line("Enter ID (max 8 chars ASCII)");
     let port = read::<u16>("Listen on port");
@@ -30,24 +30,31 @@ async fn main() -> TResult {
                                 _ => ()
                         }
                     }
+                    let text = format!("Some text.");
+                    let mut buf = vec![];
+                    write_string(&mut buf, &text)?;
+                    passive_station.append_frame(TokenFrameType::Data {
+                        send_mode: TokenSendMode::Broadcast, seq: 0, payload: buf });
+                    
                     passive_station.pass_on_token()?;
                 }
             },
             Err(e) => println!("Recv err: {e}."),
         }
 
-        let text = read_line("Write");
-        if !text.is_empty() {
-            let mut buf = vec![];
-            match write_string(&mut buf, &text) {
-                Ok(()) => (),
-                Err(e) => {
-                    println!("Invalid chat message: {e}.");
-                }
-            };
-            passive_station.append_frame(TokenFrameType::Data {
-                send_mode: TokenSendMode::Broadcast, seq: 0, payload: buf })
-        }
+
+        // let text = read_line("Write");
+        // if !text.is_empty() {
+        //     let mut buf = vec![];
+        //     match write_string(&mut buf, &text) {
+        //         Ok(()) => (),
+        //         Err(e) => {
+        //             println!("Invalid chat message: {e}.");
+        //         }
+        //     };
+        //     passive_station.append_frame(TokenFrameType::Data {
+        //         send_mode: TokenSendMode::Broadcast, seq: 0, payload: buf })
+        // }
         stdout().flush().unwrap();
     }
 }

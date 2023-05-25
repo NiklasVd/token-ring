@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{io::Cursor};
 use byteorder::{WriteBytesExt, ReadBytesExt, BigEndian};
 use crate::{id::WorkStationId, serialize::{Serializable, write_vec, read_vec, write_byte_vec, read_byte_vec}, signature::Signed, err::TResult, util::timestamp};
@@ -107,7 +108,7 @@ impl Serializable for TokenFrameId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Token {
     pub header: Signed<TokenHeader>,
     // Signed container not necessary anymore
@@ -121,6 +122,12 @@ impl Token {
         Token {
             header, frames: vec![]
         }
+    }
+}
+
+impl fmt::Debug for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Origin: {:?}, Frames: {:?} ", self.header.val.origin, self.frames)
     }
 }
 
@@ -146,7 +153,7 @@ impl Serializable for Token {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TokenFrame {
     pub id: TokenFrameId,
     pub content: TokenFrameType
@@ -157,6 +164,12 @@ impl TokenFrame {
         TokenFrame {
             id, content
         }
+    }
+}
+
+impl fmt::Debug for TokenFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Frame{:?}{} {:?}", self.id.source, self.id.timestamp, self.content)
     }
 }
 
@@ -249,12 +262,12 @@ impl Serializable for TokenFrameType {
 impl std::fmt::Debug for TokenFrameType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TokenFrameType::Empty => write!(f, "Token frame empty"),
-            TokenFrameType::Data { send_mode, seq,
-                payload } => 
-                write!(f, "Token frame data (delivery: {:?}, seq: {seq}, payload size: {:?}", send_mode, payload.len()),
-            TokenFrameType::DataReceived { source, seq } => 
-                write!(f, "Token frame data ack (from: {source}, seq: {seq})"),
+            TokenFrameType::Empty => write!(f, "Empty"),
+            TokenFrameType::Data { send_mode,
+                payload, .. } => 
+                write!(f, "Data: {:?}, {:?}b", send_mode, payload.len()),
+            TokenFrameType::DataReceived { source, .. } => 
+                write!(f, "Data Ack: {source}"),
         }
     }
 }

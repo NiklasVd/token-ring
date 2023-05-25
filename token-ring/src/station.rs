@@ -225,27 +225,28 @@ impl ActiveStation {
     }
 
     async fn pass_on_token(&mut self) -> TResult {
-        let next_station = if let Some(next_station) = self.token_passer.select_next_station() {
+        let next_station = if let Some(next_station) =
+            self.token_passer.select_next_station() {
             next_station
         } else {
-            println!("Cannot pass on token because ring is empty.");
             return Err(GlobalError::Internal(TokenRingError::EmptyRing))
         };
         let addr = self.get_station_addr(&next_station).unwrap();
-        let curr_token = match self.token_passer.curr_token.as_ref() {
-            Some(t) => {
-                println!("Passing token on to {:?}{:?}.", next_station, addr);  
-                t.clone()
-            },
-            None => {
-                println!("Token passed over all stations. Generating new and passing to {:?}{:?}.", next_station, addr);
-                self.generate_token()?
+        // If token becomes too full, clear frames
+        let token = if let Some(token) = self.token_passer.curr_token.as_mut() {
+            if token.frames.len() > self.connected_stations.len() * 2 {
+                token.frames.clear();
             }
+            token.clone()
+        } else {
+            Token::new(Signed::new(
+                    &self.config.keypair, TokenHeader::new(
+                        self.config.id.clone()))?)
         };
 
         self.token_passer.pass_token(next_station);
         self.send_packet(addr, 
-            PacketType::TokenPass(curr_token)).await
+            PacketType::TokenPass(token)).await
     }
 
     async fn recv_leave(&mut self, addr: SocketAddr, id: &WorkStationId) -> TResult {
@@ -261,12 +262,6 @@ impl ActiveStation {
             println!("{:?}{:?} intended to leave but is not a registered station in this ring.", id, addr)
         }
         Err(GlobalError::Internal(TokenRingError::StationNotRegistered(id.clone(), addr)))
-    }
-
-    fn generate_token(&self) -> TResult<Token> {
-        Ok(Token::new(Signed::new(
-                    &self.config.keypair, TokenHeader::new(
-                        self.config.id.clone()))?))
     }
 
     fn verify_recv_packet(&self, packet: &QueuedPacket) -> TResult {
@@ -350,9 +345,13 @@ impl PassiveStation {
     }
 
     pub fn append_frame(&mut self, frame: TokenFrameType) {
-        println!("Appended token frame {:?} for next token.", frame);
-        self.cached_frames.push(TokenFrame::new(TokenFrameId::new(
-            self.config.id.clone()), frame));
+        let frame_container = TokenFrame::new(TokenFrameId::new(
+            self.config.id.clone()), frame);
+        if let Some(token) = self.get_token_mut() {
+            token.frames.push(frame_container);
+        } else {
+            self.cached_frames.push(frame_container);
+        }
     }
 
     pub fn get_token_mut(&mut self) -> Option<&mut Token> {
