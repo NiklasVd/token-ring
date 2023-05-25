@@ -1,9 +1,9 @@
-use std::io::Cursor;
+use std::{io::Cursor, fmt::{Debug, Formatter}};
 use ed25519_dalek::{PublicKey, Signature as S, Keypair, Signer, Verifier, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH, ed25519::signature::Signature};
 use crate::{serialize::{Serializable, read_byte_arr, write_byte_arr, write_byte_vec, read_byte_vec}, err::TResult};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Signed<T: Serializable> {
+#[derive(Clone, PartialEq)]
+pub struct Signed<T: Serializable + Debug> {
     /* Alternative layout: keypair, val stored on initialization,
     while val_bytes and signature are kept in Option types. Then,
     signature may be generated on the fly and not when Signed instance is created.
@@ -17,7 +17,13 @@ pub struct Signed<T: Serializable> {
     val_bytes: Vec<u8>
 }
 
-impl<T: Serializable> Signed<T> {
+impl<T: Serializable + Debug> Debug for Signed<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.val)
+    }
+}
+
+impl<T: Serializable + Debug> Signed<T> {
     pub fn new(keypair: &Keypair, val: T) -> TResult<Self> {
         // Upon init the value is serialized immediately, in order to
         // generate signature (and to drop private key from memory).
@@ -34,7 +40,7 @@ impl<T: Serializable> Signed<T> {
     }
 }
 
-impl<T: Serializable<Output = T>> Serializable for Signed<T> {
+impl<T: Serializable<Output = T> + Debug> Serializable for Signed<T> {
     type Output = Signed<T>;
 
     fn write(&self, buf: &mut Vec<u8>) -> TResult {

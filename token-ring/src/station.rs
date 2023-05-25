@@ -1,9 +1,8 @@
 use std::{sync::{Arc, atomic::{AtomicBool, Ordering}, Mutex}, collections::HashMap, net::{SocketAddr, SocketAddrV4, Ipv4Addr}, time::Duration};
 use crossbeam_channel::{Sender, Receiver, unbounded};
 use ed25519_dalek::Keypair;
-use log::{warn, info};
 use tokio::net::UdpSocket;
-use crate::{id::WorkStationId, comm::{QueuedPacket, WorkStationSender, WorkStationReceiver, send_loop, recv_loop}, signature::{generate_keypair, Signed}, err::{TResult, GlobalError, TokenRingError}, packet::{Packet, PacketType, PacketHeader, JoinAnswerResult}, token::{Token, TokenHeader, TokenFrame}, pass::{TokenPasser, StationStatus}};
+use crate::{id::WorkStationId, comm::{QueuedPacket, WorkStationSender, WorkStationReceiver, send_loop, recv_loop}, signature::{generate_keypair, Signed}, err::{TResult, GlobalError, TokenRingError}, packet::{Packet, PacketType, PacketHeader, JoinAnswerResult}, token::{Token, TokenHeader, TokenFrame, TokenFrameType, TokenFrameId}, pass::{TokenPasser, StationStatus}};
 
 pub type AMx<T> = Arc<Mutex<T>>;
 
@@ -116,7 +115,7 @@ impl ActiveStation {
             let source_id = &packet.0.header.val.source;
             // Check signature and destination ID
             if let Err(e) = self.verify_recv_packet(&packet) {
-                warn!("{:?}{:?} sent invalid packet: {e}. Data will be discarded.",
+                println!("{:?}{:?} sent invalid packet: {e}. Data will be discarded.",
                     source_id, packet.1);
                 return Err(e)
             } else {
@@ -124,7 +123,7 @@ impl ActiveStation {
                     PacketType::JoinRequest(pw) => 
                         self.recv_join_request(packet.1, source_id.clone(), pw).await?,
                     PacketType::JoinReply(_) => {
-                        warn!("Received join reply by {:?}{:?} as active station. Discarding.", source_id, packet.1)
+                        println!("Received join reply by {:?}{:?} as active station. Discarding.", source_id, packet.1)
                     },
                     PacketType::TokenPass(token) => self.recv_token_pass(packet.1, source_id, token).await?,
                     PacketType::Leave() => self.recv_leave(packet. 1, source_id).await?,
@@ -138,7 +137,7 @@ impl ActiveStation {
         pw: String) -> TResult {
         if let Some(addr) = self.get_station_addr(&join_id) {
             if addr == join_addr {
-                warn!("{:?}{:?} attempted to join ring twice. Blocking attempt.", join_id, join_id);
+                println!("{:?}{:?} attempted to join ring twice. Blocking attempt.", join_id, join_id);
                 self.send_packet(addr, 
                     PacketType::JoinReply(
                         JoinAnswerResult::Deny("Already joined".to_owned()))).await?;
@@ -146,7 +145,7 @@ impl ActiveStation {
                     TokenRingError::RejectedJoinAttempt(join_id, "Already Joined".to_owned())))
             } else {
                 // Work station joined again but with new socket addr.
-                warn!("{:?}{:?} attempted to join with new socket addr {:?}. Passing.", join_id, addr, join_addr)
+                println!("{:?}{:?} attempted to join with new socket addr {:?}. Passing.", join_id, addr, join_addr)
             }
         }
 
@@ -162,7 +161,7 @@ impl ActiveStation {
                 join_reply).await?;
             self.add_station(join_id.clone(), join_addr);
 
-            info!("Added new station to ring: {:?}{:?}.", join_id, join_addr);
+            println!("Added new station to ring: {:?}{:?}.", join_id, join_addr);
             Ok(())
         }
     }
@@ -187,7 +186,7 @@ impl ActiveStation {
     fn add_station(&mut self, id: WorkStationId, addr: SocketAddr) {
         if let Some(prev_station) = self.connected_stations.insert(
             id.clone(), addr) {
-            warn!("New station has same ID as {:?}{:?}. Replacing contact.", id, prev_station);
+            println!("New station has same ID as {:?}{:?}. Replacing contact.", id, prev_station);
         } else {
             // If this ID didnt exist before, add to status list
             self.token_passer.station_status.insert(id, StationStatus(false));
@@ -198,7 +197,7 @@ impl ActiveStation {
         if let Some(_) = self.connected_stations.remove(id) {
             self.token_passer.station_status.remove(id);
         } else {
-            warn!("Did not find connected station with id {id}.")
+            println!("Did not find connected station with id {id}.")
         }
     }
 
@@ -210,7 +209,7 @@ impl ActiveStation {
         // Check if socket addr of token sender equals addr stored in id hashmap
         if let Some(station_addr) = self.get_station_addr(id) {
             if station_addr != addr {
-                warn!("{:?}{:?} passed token but is registered under socket addr {:?}. Discarding token.", id, addr, station_addr);
+                println!("{:?}{:?} passed token but is registered under socket addr {:?}. Discarding token.", id, addr, station_addr);
                 return Err(GlobalError::Internal(TokenRingError::InvalidToken(id.clone(), token)));
             }
         }
@@ -226,38 +225,40 @@ impl ActiveStation {
     }
 
     async fn pass_on_token(&mut self) -> TResult {
-        if let Some(next_station) = self.token_passer.select_next_station() {
-            let addr = self.get_station_addr(&next_station).unwrap();
-            let curr_token = match self.token_passer.curr_token.as_ref() {
-                Some(t) => {
-                    info!("Passing token on to {:?}{:?}.", next_station, addr);
-                    t.clone()
-                },
-                None => {
-                    info!("Token passed over all stations. Generating new and passing to {:?}{:?}.", next_station, addr);
-                    self.generate_token()?
-                }
-            };
-
-            self.send_packet(addr, 
-                PacketType::TokenPass(curr_token)).await
+        let next_station = if let Some(next_station) = self.token_passer.select_next_station() {
+            next_station
         } else {
-            warn!("Cannot pass on token because ring is empty.");
-            Err(GlobalError::Internal(TokenRingError::EmptyRing))
-        }
+            println!("Cannot pass on token because ring is empty.");
+            return Err(GlobalError::Internal(TokenRingError::EmptyRing))
+        };
+        let addr = self.get_station_addr(&next_station).unwrap();
+        let curr_token = match self.token_passer.curr_token.as_ref() {
+            Some(t) => {
+                println!("Passing token on to {:?}{:?}.", next_station, addr);  
+                t.clone()
+            },
+            None => {
+                println!("Token passed over all stations. Generating new and passing to {:?}{:?}.", next_station, addr);
+                self.generate_token()?
+            }
+        };
+
+        self.token_passer.pass_token(next_station);
+        self.send_packet(addr, 
+            PacketType::TokenPass(curr_token)).await
     }
 
     async fn recv_leave(&mut self, addr: SocketAddr, id: &WorkStationId) -> TResult {
         if let Some(registered_addr) = self.get_station_addr(id) {
             if registered_addr == addr {
-                info!("{:?}{:?} left the ring.", id, addr);
+                println!("{:?}{:?} left the ring.", id, addr);
                 self.remove_station(id);
                 return Ok(())
             } else {
-                warn!("{:?}{:?} intended to leave ring but registered socket addr differs: {:?}. Ignoring.", id, addr, registered_addr);
+                println!("{:?}{:?} intended to leave ring but registered socket addr differs: {:?}. Ignoring.", id, addr, registered_addr);
             }
         } else {
-            warn!("{:?}{:?} intended to leave but is not a registered station in this ring.", id, addr)
+            println!("{:?}{:?} intended to leave but is not a registered station in this ring.", id, addr)
         }
         Err(GlobalError::Internal(TokenRingError::StationNotRegistered(id.clone(), addr)))
     }
@@ -332,7 +333,9 @@ impl PassiveStation {
     }
 
     pub async fn connect(&mut self, addr: SocketAddr, pw: String) -> TResult {
-        self.send_packet_to(addr, PacketType::JoinRequest(pw))
+        self.send_packet_to(addr, PacketType::JoinRequest(pw))?;
+        self.conn_mode = ConnectionMode::Pending(addr);
+        Ok(())
     }
 
     pub async fn shutdown(&mut self) -> TResult {
@@ -341,13 +344,15 @@ impl PassiveStation {
         // send goodbye in time.
         tokio::time::sleep(Duration::from_secs(2)).await;
         self.running.store(false, Ordering::Relaxed);
-        info!("Shudown passive station {}.", self.config.id);
+        self.conn_mode = ConnectionMode::Offline;
+        println!("Shutdown passive station {}.", self.config.id);
         Ok(())
     }
 
-    pub fn append_frame(&mut self, frame: TokenFrame) {
-        info!("Appended token frame {:?} for next token.", frame);
-        self.cached_frames.push(frame);
+    pub fn append_frame(&mut self, frame: TokenFrameType) {
+        println!("Appended token frame {:?} for next token.", frame);
+        self.cached_frames.push(TokenFrame::new(TokenFrameId::new(
+            self.config.id.clone()), frame));
     }
 
     pub fn get_token_mut(&mut self) -> Option<&mut Token> {
@@ -373,7 +378,7 @@ impl PassiveStation {
                                 // Packet is legit; continue.
                                 match packet.0.content {
                                     PacketType::TokenPass(token) => self.recv_token_pass(token),
-                                    n @ _ => warn!("Received invalid packet: {:?}.", n)
+                                    n @ _ => println!("Received invalid packet type: {:?}.", n)
                                 }
                                 Ok(())
                             } else {
@@ -390,7 +395,7 @@ impl PassiveStation {
                                 self.recv_join_reply(result).await
                             },
                             n @ _ => {
-                                warn!("Received invalid packet: {:?}. Local station is not connected yet.", n);
+                                println!("Received invalid packet: {:?}. Local station is not connected yet.", n);
                                 Err(GlobalError::Internal(TokenRingError::NotConnected))
                         }
                     }
@@ -402,22 +407,34 @@ impl PassiveStation {
     }
 
     async fn recv_join_reply(&mut self, result: JoinAnswerResult) -> TResult {
+        let addr = match &self.conn_mode {
+            ConnectionMode::Offline => {
+                println!("Received join reply without asking. Discarding.");
+                return Err(GlobalError::Internal(TokenRingError::NotConnected))
+            },
+            ConnectionMode::Connected(_, _) => {
+                println!("Received join reply but station is already connected. Discarding.");
+                return Err(GlobalError::Internal(TokenRingError::AlreadyConnected))
+            },
+            ConnectionMode::Pending(addr) => *addr
+        };
+
         match result {
             JoinAnswerResult::Confirm(id) => {
-                info!("Active station {id} accepted connection. Joining ring.");
+                println!("Active station {id} accepted connection. Joining ring.");
+                self.conn_mode = ConnectionMode::Connected(id, addr);
                 Ok(())
             },
             JoinAnswerResult::Deny(reason) => {
-                warn!("Active workstation denied access: {reason}.");
+                println!("Active workstation denied access: {reason}.");
                 Err(GlobalError::Internal(TokenRingError::FailedJoinAttempt(reason)))
             },
         }
     }
 
     fn recv_token_pass(&mut self, mut token: Token) {
-        info!("Received token: {:?}.", token);
         if let Some(prev_token) = self.curr_token.as_ref() {
-            warn!("Already holding token: {:?}. Discarding old and accepting new one.", prev_token)
+            println!("Already holding token: {:?}. Discarding old and accepting new one.", prev_token)
         }
         // Move all cached frames into new token.
         token.frames.append(&mut self.cached_frames.drain(..).collect::<Vec<_>>());

@@ -1,5 +1,4 @@
 use std::{collections::HashMap, time::Instant};
-use log::{warn, info};
 use crate::{id::WorkStationId, token::Token, err::{TResult, TokenRingError, GlobalError}};
 
 pub struct StationStatus(pub bool /* Received token this round? */, /* u32 (Checksum?) */);
@@ -53,11 +52,6 @@ impl TokenPasser {
         }
     }
 
-    pub fn pass_token(&mut self, to_id: WorkStationId) {
-        self.state = Some(TokenState(to_id, Instant::now()));
-        self.pass_mode = TokenPassMode::Passed;
-    }
-
     pub fn recv_token(&mut self, new_token: Token, sender_id: &WorkStationId) -> TResult {
         if let Some(TokenState(
             id, send_time)) = self.state.as_mut() {
@@ -74,7 +68,7 @@ impl TokenPasser {
                         // If all is good, set pass mode to Received and get ready for next pass
                         if let Some(status) = self.get_station(sender_id) {
                             if status.0 {
-                                warn!("Station {sender_id} that currently holds token already held it before this rotation.");
+                                println!("Station {sender_id} that currently holds token already held it before this rotation.");
                             }
                             // Set station status to true now that token was passed to it.
                             status.0 = true;
@@ -82,22 +76,27 @@ impl TokenPasser {
                             self.curr_token = Some(new_token);
                             // Set pass mode so that new token may be sent
                             self.pass_mode = TokenPassMode::Received;
-                            info!("Received valid token from {sender_id}. Ready to pass on.");
+                            println!("Received valid token from {sender_id}. Ready to pass on.");
                             return Ok(())
                         }
                     } else {
-                        warn!("Received token from wrong station: {sender_id}. Expecting: {id}. Discarding.");
+                        println!("Received token from wrong station: {sender_id}. Expecting: {id}. Discarding.");
                     }
                 } else {
-                    warn!("Received invalid token header from {sender_id}. Discarding.");
+                    println!("Received invalid token header from {sender_id}. Discarding.");
                 }
             } else {
-                warn!("Received token too late ({total_pass_time}s) from {sender_id}. Discarding.");
+                println!("Received token too late ({total_pass_time}s) from {sender_id}. Discarding.");
             }
         } else {
-            warn!("Token sent by {sender_id}. Did not expect token.");
+            println!("Token sent by {sender_id}. Did not expect token.");
         }
         Err(GlobalError::Internal(TokenRingError::InvalidToken(sender_id.clone(), new_token)))
+    }
+
+    pub fn pass_token(&mut self, to_id: WorkStationId) {
+        self.state = Some(TokenState(to_id, Instant::now()));
+        self.pass_mode = TokenPassMode::Passed;
     }
 
     pub fn select_next_station(&mut self) -> Option<WorkStationId> {
@@ -105,15 +104,17 @@ impl TokenPasser {
             return None
         }
 
-        if let Some((next_station_id, _)) = self.station_status.iter()
+        let next_station = if let Some((next_station_id, _)) = self.station_status.iter()
             .find(|(_, status)| !status.0) {
-            Some(next_station_id.clone())
+            next_station_id.clone()
         } else {
             // This token rotation is over. Reset status of all stations and send
             // new token.
             self.station_status.values_mut().for_each(|s| s.0 = false);
-            Some(self.station_status.keys().last().unwrap().clone())
-        }
+            self.station_status.keys().last().unwrap().clone()
+        };
+        self.pass_token(next_station.clone());
+        Some(next_station)
     }
 
     fn get_station(&mut self, id: &WorkStationId) -> Option<&mut StationStatus> {

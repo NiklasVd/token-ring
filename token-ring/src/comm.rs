@@ -1,6 +1,5 @@
 use std::{sync::{Arc, atomic::{AtomicBool, Ordering}}, net::SocketAddr};
 use crossbeam_channel::{Sender, Receiver};
-use log::{error, info};
 use tokio::net::UdpSocket;
 use crate::{packet::Packet, err::TResult, serialize::Serializer};
 
@@ -35,7 +34,7 @@ pub fn send_loop(sender: WorkStationSender) -> TResult {
                 let payload = match next_packet.0.serialize() {
                     Ok(payload) => payload,
                     Err(e) =>  {
-                        error!("Send queue encountered serialization error: {e}.");
+                        println!("Send queue encountered serialization error: {e}.");
                         continue
                     },
                 };
@@ -43,22 +42,22 @@ pub fn send_loop(sender: WorkStationSender) -> TResult {
                 // Send packet
                 match sender.sock.send_to(
                     payload.as_slice(), next_packet.1).await {
-                    Ok(size) => info!("[Send to {:?}] {:?} packet ({size}b).",
+                    Ok(size) => println!("[Send to {:?}] {:?} packet ({size}b).",
                         next_packet.1,
                         next_packet.0.content),
                     Err(e) => {
-                        error!("Socket failed to send: {e}.");
+                        println!("Socket failed to send: {e}.");
                         continue
                     },
                 }
             }
 
-            if sender.running.load(Ordering::Relaxed) {
+            if !sender.running.load(Ordering::Relaxed) {
                 break
             }
         }
 
-        info!("Send loop stopped.")
+        println!("Send loop stopped.")
     });
     Ok(())
 }
@@ -83,7 +82,7 @@ pub fn recv_loop(recv: WorkStationReceiver) -> TResult {
         loop {
             // Readability condition required?
             if let Err(e) = recv.sock.readable().await {
-                error!("Pending read returned error: {e}.");
+                println!("Pending read returned error: {e}.");
                 continue
             }
 
@@ -91,7 +90,10 @@ pub fn recv_loop(recv: WorkStationReceiver) -> TResult {
             let (size, addr) = match recv.sock.try_recv_from(&mut buf) {
                 Ok(data) => data,
                 Err(e) => {
-                    error!("Failed to read from socket: {e}.");
+                    match e.kind() {
+                        std::io::ErrorKind::WouldBlock => (),
+                        _ => println!("Failed to read from socket: {e}."),
+                    }
                     continue
                 },
             };
@@ -101,23 +103,23 @@ pub fn recv_loop(recv: WorkStationReceiver) -> TResult {
             let packet = match Packet::deserialize(recv_buf) {
                 Ok(p) => p,
                 Err(e) => {
-                    error!("Receive queue encountered deserialization error: {e}.");
+                    println!("Receive queue encountered deserialization error: {e}.");
                     continue
                 },
             };
-
+            
             // Pass to main thread
-            info!("[Recv from {:?}{:?}] {:?} packet ({size}b).",
+            println!("[Recv from {:?}{:?}] {:?} packet ({size}b).",
                 packet.header.val.source, addr, packet.content);
             if let Err(e) = recv.recv_queue.send(QueuedPacket(packet, addr)) {
-                error!("Failed to queue received packet: {e}.")
+                println!("Failed to queue received packet: {e}.")
             }
 
-            if recv.running.load(Ordering::Relaxed) {
+            if !recv.running.load(Ordering::Relaxed) {
                 break
             }
         }
-        info!("Recv loop stopped.")
+        println!("Recv loop stopped.")
     });
     Ok(())
 }

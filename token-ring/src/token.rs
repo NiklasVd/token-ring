@@ -74,7 +74,7 @@ impl Serializable for TokenSendMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenFrameId {
-    source: WorkStationId,
+    pub source: WorkStationId,
     timestamp: u64,
 }
 
@@ -148,8 +148,8 @@ impl Serializable for Token {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenFrame {
-    id: TokenFrameId,
-    content: TokenFrameType
+    pub id: TokenFrameId,
+    pub content: TokenFrameType
 }
 
 impl TokenFrame {

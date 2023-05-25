@@ -71,6 +71,7 @@ impl From<RecvError> for GlobalError {
 pub enum TokenRingError {
     InvalidPacketHeader,
     NotConnected,
+    AlreadyConnected,
     StationNotRegistered(WorkStationId, SocketAddr),
     InvalidSignature,
     InvalidToken(WorkStationId, Token),

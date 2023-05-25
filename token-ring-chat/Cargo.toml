@@ -7,6 +7,6 @@ edition = "2021"
 
 [dependencies]
 token-ring = { path = "../token-ring" }
-pretty_env_logger = "0.4.0"
-log = "0.4.17"
-tokio = { version = "1.28.1", features = ["net", "rt", "time"] }
+#pretty_env_logger = "0.4.0"
+#log = "0.4.17"
+tokio = { version = "1.28.1", features = ["full"] }
