@@ -350,6 +350,10 @@ impl PassiveStation {
         self.cached_frames.push(frame);
     }
 
+    pub fn get_token_mut(&mut self) -> Option<&mut Token> {
+        self.curr_token.as_mut()
+    }
+
     pub fn pass_on_token(&mut self) -> TResult {
         if let Some(curr_token) = self.curr_token.take() {
             self.send_packet(PacketType::TokenPass(curr_token))
